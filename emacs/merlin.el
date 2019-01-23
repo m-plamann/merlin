@@ -430,31 +430,63 @@ return (LOC1 . LOC2)."
 ;; PROCESS MANAGEMENT ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun merlin--call-process (path args)
+(defun merlin--call--log-debug-output (tmp)
+  (when tmp
+    (with-demoted-errors "Error when trying to read merlin log: %S"
+      (with-current-buffer merlin-log-buffer-name
+        (goto-char (point-max))
+        (insert "# stderr\n")
+        (insert-file-contents tmp)
+        (delete-file tmp)))))
+
+(defun merlin--call-process-sync (path args ib tmp wd)
+  (with-temp-buffer
+    (let ((ob (current-buffer)))
+      (with-current-buffer ib
+        (let ((default-directory wd))
+          (apply 'call-process-region (point-min) (point-max) path nil
+                 (list ob tmp) nil args))))
+    (setq result (buffer-string))
+    (merlin-debug "# stdout\n%s" result)
+    (merlin--call--log-debug-output tmp)
+    result))
+
+(defun merlin--call-process-async (path args ib tmp wd callback)
+  (let* ((ob (generate-new-buffer " *merlin*"))
+         (sentinel
+          `(lambda (process event)
+             (if (not (process-live-p process))
+                 (let ((stdout (with-current-buffer ,ob (buffer-string))))
+                   (kill-buffer ,ob)
+                   (funcall ,callback stdout)
+                   (merlin--call--log-debug-output ,tmp)))))
+         (process (let ((default-directory wd))
+                    (make-process
+                     :name "merlin"
+                     :buffer ob
+                     :command (cons path args)
+                     :connection-type 'pipe
+                     :noquery nil
+                     :sentinel sentinel))))
+    (if (process-live-p process)
+        (ignore-errors
+          (process-send-string process (buffer-string))
+          (process-send-eof process)))))
+
+(defun merlin--call-process (path args &optional callback)
   "Some workarounds for piping buffer content to a process"
   (merlin-debug "# calling binary: %S with arguments: %S.\n" path args)
   (let ((ib  (current-buffer))
         (tmp (when merlin-debug (make-temp-file "merlin")))
         (wd  (expand-file-name default-directory))
         result)
-    (with-temp-buffer
-      (let ((ob (current-buffer)))
-        (with-current-buffer ib
-          (let ((default-directory wd))
-            (apply 'call-process-region (point-min) (point-max) path nil
-                   (list ob tmp) nil args))))
-      (setq result (buffer-string))
-      (merlin-debug "# stdout\n%s" result)
-      (when tmp
-        (with-demoted-errors "Error when trying to read merlin log: %S"
-          (with-current-buffer merlin-log-buffer-name
-            (goto-char (point-max))
-            (insert "# stderr\n")
-            (insert-file-contents tmp)
-            (delete-file tmp))))
-      result)))
+    (if callback
+        (merlin--call-process-async path args ib tmp wd callback)
+      (merlin--call-process-sync path args ib tmp wd))))
 
-(defun merlin--call-merlin (command &rest args)
+;; (with-temp-buffer (insert "hello world") (merlin--call-process-async "/usr/bin/echo" '("hello argv world") (quote 'message)))
+
+(defun merlin--call-merlin (command callback &rest args)
   "Invoke merlin binary with the proper setup to execute the command passed as argument (lookup appropriate binary, setup logging, pass global settings)"
   ; Really start process
   (let ((binary      (merlin-command))
@@ -510,34 +542,46 @@ return (LOC1 . LOC2)."
     (let ((cdr (nthcdr 5 merlin-debug-last-commands)))
       (when cdr (setcdr cdr nil)))
     ;; Call merlin process
-    (setcdr (car merlin-debug-last-commands) (merlin--call-process binary args))))
+    (setcdr (car merlin-debug-last-commands)
+            (merlin--call-process binary args callback))))
+
+(defun merlin/call-process-result (result)
+  (condition-case err
+      (setq result (car (read-from-string result)))
+    (error
+     (error "merlin: error %s trying to parse answer: %s"
+            err result)))
+  (let ((notifications (cdr-safe (assoc 'notifications result)))
+        (class (cdr-safe (assoc 'class result)))
+        (value (cdr-safe (assoc 'value result))))
+    (dolist (notification notifications)
+      (message "(merlin) %s" notification))
+    (cond ((string-equal class "return") value)
+          ((string-equal class "failure")
+           (error "merlin-mode failure: %s" value))
+          ((string-equal class "error")
+           (error "merlin: %s" value))
+          (t (error "unknown answer: %S:%S" class value)))))
 
 (defun merlin/call (command &rest args)
   "Execute a command and parse output: return an sexp on success or throw an error"
-  (let ((result (merlin--call-merlin command args)))
-    (condition-case err
-        (setq result (car (read-from-string result)))
-      (error
-        (error "merlin: error %s trying to parse answer: %s"
-               err result)))
-    (let ((notifications (cdr-safe (assoc 'notifications result)))
-          (class (cdr-safe (assoc 'class result)))
-          (value (cdr-safe (assoc 'value result))))
-      (dolist (notification notifications)
-        (message "(merlin) %s" notification))
-      (cond ((string-equal class "return") value)
-            ((string-equal class "failure")
-             (error "merlin-mode failure: %s" value))
-            ((string-equal class "error")
-             (error "merlin: %s" value))
-            (t (error "unknown answer: %S:%S" class value))))))
+  (let ((result (merlin--call-merlin command nil args)))
+    (merlin/call-process-result result)))
+
+(cl-defun merlin/call-async (command callback &rest args)
+  "Execute a command and parse output: return an sexp on success or throw an error"
+  (merlin--call-merlin
+   command
+   `(lambda (result)
+      (funcall ,callback (merlin/call-process-result result)))
+   args))
 
 (defun merlin-stop-server ()
   "Shutdown merlin server."
   (interactive)
   (unless merlin-mode (message "Buffer is not managed by merlin."))
   (when merlin-mode
-    (merlin--call-merlin "stop-server")
+    (merlin--call-merlin "stop-server" nil)
     (setq merlin-erroneous-buffer nil)
     (setq merlin-buffer-configuration nil)))
 
@@ -888,7 +932,7 @@ prefix of `bar' is `'."
                         (string-prefix-p suffix name)))
            collect (append x '((kind . "Label") (info . nil)))))
 
-(defun merlin/complete (ident)
+(defun merlin/complete (ident &rest rest)
   "Return the data for completion of IDENT, i.e. a list of tuples of the form
   '(NAME TYPE KIND INFO)."
   (setq-local merlin--dwimed nil)
@@ -896,39 +940,51 @@ prefix of `bar' is `'."
          (ident- (merlin/completion-split-ident ident))
          (suffix (cdr ident-))
          (prefix (car ident-))
-         (data   (merlin/call "complete-prefix"
-                              "-position" (merlin/unmake-point (point))
-                              "-prefix" ident
-                              "-doc" (if merlin-completion-with-doc "y" "n")))
-         ;; all classic entries
-         (entries (cdr (assoc 'entries data)))
-         ;; context is 'null or ('application ...)
-         (context (cdr (assoc 'context data)))
-         (application (and (listp context)
-                           (equal (car context) "application")
-                           (cadr context)))
-         ;; Argument-type
-         (expected-ty (and application
-                           (not (string-equal "'_a"
-                                  (cdr (assoc 'argument_type application))))
-                           (cdr (assoc 'argument_type application))))
-         ;; labels
-         (labels (and application (cdr (assoc 'labels application)))))
-    (setq labels (merlin--completion-prepare-labels labels suffix))
-    ;; DWIM completion
-    (when (and merlin-completion-dwim (not labels) (not entries))
-      (setq data (merlin/call "expand-prefix"
-                              "-position" (merlin/unmake-point (point))
-                              "-prefix" ident))
-      (setq entries (cdr (assoc 'entries data)))
-      (setq-local merlin--dwimed t)
-      (setq prefix ""))
-    ;; Concat results
-    (let ((result (append labels entries)))
-      (if expected-ty
-          (cl-loop for x in result
-                   collect (append x `((argument_type . ,expected-ty))))
-        result))))
+         (process-merlin-results
+          `(lambda (data)
+             (let* (;; all classic entries
+                    (entries (cdr (assoc 'entries data)))
+                    ;; context is 'null or ('application ...)
+                    (context (cdr (assoc 'context data)))
+                    (application (and (listp context)
+                                      (equal (car context) "application")
+                                      (cadr context)))
+                    ;; Argument-type
+                    (expected-ty (and application
+                                      (not (string-equal "'_a"
+                                                         (cdr (assoc 'argument_type application))))
+                                      (cdr (assoc 'argument_type application))))
+                    ;; labels
+                    (labels (and application (cdr (assoc 'labels application)))))
+               (setq labels (merlin--completion-prepare-labels labels ,suffix))
+               ;; DWIM completion
+               ;; CR mplamann: asyncify
+               (when (and merlin-completion-dwim (not labels) (not entries))
+                 (setq data (merlin/call "expand-prefix"
+                                         "-position" (merlin/unmake-point (point))
+                                         "-prefix" ,ident))
+                 (setq entries (cdr (assoc 'entries data)))
+                 (setq-local merlin--dwimed t)
+                 (setq prefix ""))
+               ;; Concat results
+               (let ((result (append labels entries)))
+                 (if expected-ty
+                     (cl-loop for x in result
+                              collect (append x `((argument_type . ,expected-ty))))))))))
+    (let ((async-callback (plist-get rest :async-callback)))
+      (if async-callback
+          (merlin/call-async "complete-prefix"
+                             `(lambda (data)
+                                (funcall (function ,async-callback)
+                                         (funcall (function ,process-merlin-results)
+                                                  data)))
+                             "-position" (merlin/unmake-point (point))
+                             "-prefix" ident
+                             "-doc" (if merlin-completion-with-doc "y" "n"))
+        (funcall (function process-merlin-results)
+         (merlin/call "expand-prefix"
+                      "-position" (merlin/unmake-point (point))
+                      "-prefix" ident))))))
 
 ;; FIXME: merlin shouldn't rely on editor to compute bounds
 (defun bounds-of-ocaml-atom-at-point ()
@@ -1633,7 +1689,7 @@ Empty string defaults to jumping to all these."
   "Print the version of the ocamlmerlin binary."
   (interactive)
   (with-demoted-errors "Error invoking merlin: %S"
-    (message "%s" (merlin--call-merlin "-version"))))
+    (message "%s" (merlin--call-merlin "-version" nil))))
 
 (defun merlin--configuration ()
   (when (or merlin-configuration-function merlin-grouping-function)

@@ -80,6 +80,26 @@
                " (successive calls will expand aliases)"))
       (t default))))
 
+(defun merlin-company-candidates-fetcher (arg)
+  ;; This first closure is called when company wants completion candidates. It
+  ;; is expected that we eventually call [callback] with the results.
+  `(lambda (callback)
+     (let ((arg ,arg))
+       (merlin/complete
+        arg
+        :async-callback
+        `(lambda (merlin-complete-data)
+           (let ((result
+                  (let ((prefix (merlin/completion-prefix ,arg)))
+                    (cl-loop for x in merlin-complete-data
+                             collect
+                             (propertize (merlin/completion-entry-text prefix x)
+                                         'merlin-compl-type
+                                         (merlin/completion-entry-short-description x)
+                                         'merlin-arg-type (cdr (assoc 'argument_type x))
+                                         'merlin-compl-doc (cdr (assoc 'info x)))))))
+             (funcall (function ,callback) result)))))))
+
 ;; Public functions
 ;;;###autoload
 (defun merlin-company-backend (command &optional arg &rest ignored)
@@ -109,14 +129,8 @@
                      (linum (cdr (assoc 'line (assoc 'pos data)))))
                  (cons filename linum))))))
         (candidates
-         (let ((prefix (merlin/completion-prefix arg)))
-           (cl-loop for x in (merlin/complete arg)
-                    collect
-                    (propertize (merlin/completion-entry-text prefix x)
-                                'merlin-compl-type
-                                (merlin/completion-entry-short-description x)
-                                'merlin-arg-type (cdr (assoc 'argument_type x))
-                                'merlin-compl-doc (cdr (assoc 'info x))))))
+         ;; Must preserve current buffer
+         (cons :async (merlin-company-candidates-fetcher arg)))
         (post-completion
          (let ((minibuffer-message-timeout nil))
            (minibuffer-message "%s : %s" arg (merlin-company--get-candidate-type arg))))
