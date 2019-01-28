@@ -84,7 +84,8 @@
   ;; This first closure is called when company wants completion candidates. It
   ;; is expected that we eventually call [callback] with the results.
   `(lambda (callback)
-     (let ((arg ,arg))
+     (let ((arg ,arg)
+           (callback-buffer (current-buffer)))
        (merlin/complete
         arg
         :async-callback
@@ -98,7 +99,8 @@
                                          (merlin/completion-entry-short-description x)
                                          'merlin-arg-type (cdr (assoc 'argument_type x))
                                          'merlin-compl-doc (cdr (assoc 'info x)))))))
-             (funcall (function ,callback) result)))))))
+             (with-current-buffer ,callback-buffer
+               (funcall (function ,callback) result))))))))
 
 ;; Public functions
 ;;;###autoload
