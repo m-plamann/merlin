@@ -81,8 +81,6 @@
       (t default))))
 
 (defun merlin-company-candidates-fetcher (arg)
-  ;; This first closure is called when company wants completion candidates. It
-  ;; is expected that we eventually call [callback] with the results.
   `(lambda (callback)
      (let ((arg ,arg)
            (callback-buffer (current-buffer)))
@@ -130,9 +128,7 @@
                (let ((filename (merlin-lookup 'file data (buffer-file-name)))
                      (linum (cdr (assoc 'line (assoc 'pos data)))))
                  (cons filename linum))))))
-        (candidates
-         ;; Must preserve current buffer
-         (cons :async (merlin-company-candidates-fetcher arg)))
+        (candidates (cons :async (merlin-company-candidates-fetcher arg)))
         (post-completion
          (let ((minibuffer-message-timeout nil))
            (minibuffer-message "%s : %s" arg (merlin-company--get-candidate-type arg))))
