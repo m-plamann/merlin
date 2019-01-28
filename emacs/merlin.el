@@ -545,7 +545,7 @@ return (LOC1 . LOC2)."
     (setcdr (car merlin-debug-last-commands)
             (merlin--call-process binary args callback))))
 
-(defun merlin/call-process-result (result)
+(defun merlin/call-handle-result (result)
   (condition-case err
       (setq result (car (read-from-string result)))
     (error
@@ -566,14 +566,14 @@ return (LOC1 . LOC2)."
 (defun merlin/call (command &rest args)
   "Execute a command and parse output: return an sexp on success or throw an error"
   (let ((result (merlin--call-merlin command nil args)))
-    (merlin/call-process-result result)))
+    (merlin/call-handle-result result)))
 
 (cl-defun merlin/call-async (command callback &rest args)
   "Execute a command and parse output: return an sexp on success or throw an error"
   (merlin--call-merlin
    command
    `(lambda (result)
-      (funcall ,callback (merlin/call-process-result result)))
+      (funcall ,callback (merlin/call-handle-result result)))
    args))
 
 (defun merlin-stop-server ()
