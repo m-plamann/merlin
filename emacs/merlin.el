@@ -569,7 +569,7 @@ return (LOC1 . LOC2)."
     (merlin/call-handle-result result)))
 
 (cl-defun merlin/call-async (command callback &rest args)
-  "Execute a command and parse output: return an sexp on success or throw an error"
+  "Asynchronously execute a command and parse output: Call `callback' with an sexp on success or throw an error"
   (merlin--call-merlin
    command
    `(lambda (result)
