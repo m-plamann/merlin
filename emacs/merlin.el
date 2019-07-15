@@ -452,7 +452,7 @@ return (LOC1 . LOC2)."
     result))
 
 (defun merlin--call-process-async (path args ib tmp wd callback)
-  (let* ((ob (generate-new-buffer " *merlin*"))
+  (let* ((ob (generate-new-buffer " *merlin-process-output*"))
          (sentinel
           `(lambda (process event)
              (if (not (process-live-p process))
@@ -466,7 +466,7 @@ return (LOC1 . LOC2)."
                      :buffer ob
                      :command (cons path args)
                      :connection-type 'pipe
-                     :noquery nil
+                     :noquery t
                      :sentinel sentinel))))
     (if (process-live-p process)
         (ignore-errors
@@ -483,8 +483,6 @@ return (LOC1 . LOC2)."
     (if callback
         (merlin--call-process-async path args ib tmp wd callback)
       (merlin--call-process-sync path args ib tmp wd))))
-
-;; (with-temp-buffer (insert "hello world") (merlin--call-process-async "/usr/bin/echo" '("hello argv world") (quote 'message)))
 
 (defun merlin--call-merlin (command callback &rest args)
   "Invoke merlin binary with the proper setup to execute the command passed as argument (lookup appropriate binary, setup logging, pass global settings)"
